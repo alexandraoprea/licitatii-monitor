@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+import re
 import smtplib
 import sqlite3
 import ssl
@@ -14,6 +15,7 @@ from email.message import EmailMessage
 from html import escape
 from pathlib import Path
 from urllib.request import Request, urlopen
+import requests
 
 SEAP_URL = "https://e-licitatie.ro/api-pub/NoticeCommon/GetCNoticeList/"
 SEAP_REFERER = "https://e-licitatie.ro/pub/notices/c-notices"
@@ -57,8 +59,12 @@ def database():
     )""")
     con.execute("""CREATE TABLE IF NOT EXISTS deliveries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, notice_id TEXT NOT NULL, notice_no TEXT NOT NULL,
-        title TEXT NOT NULL, cpv TEXT NOT NULL, recipients TEXT NOT NULL, sent_at TEXT NOT NULL
+        title TEXT NOT NULL, cpv TEXT NOT NULL, recipients TEXT NOT NULL, sent_at TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'SEAP'
     )""")
+    delivery_columns = [row[1] for row in con.execute("PRAGMA table_info(deliveries)")]
+    if "source" not in delivery_columns:
+        con.execute("ALTER TABLE deliveries ADD COLUMN source TEXT NOT NULL DEFAULT 'SEAP'")
     con.commit()
     return con
 
@@ -106,12 +112,55 @@ def fetch_notices():
     return items
 
 
+def fetch_datadriven_notices():
+    """Citește licitațiile monitorizate din contul DataDriven al clientului."""
+    secret_path = Path(os.getenv("DATADRIVEN_SECRET", "/home/licitatii/seap-monitor/datadriven.secret"))
+    secret = dict(line.rstrip("\n").split("=", 1) for line in secret_path.open() if "=" in line)
+    session = requests.Session()
+    login_page = session.get("https://www.datadriven.ro/app/", timeout=45).text
+    def value(name):
+        return re.search(r'"%s"\s*:\s*"([^"]+)"' % name, login_page).group(1)
+    csrf, transaction, policy, api = (value(x) for x in ("csrf", "transId", "policy", "api"))
+    base = "https://dmbidiq.b2clogin.com/datadriven.ro/" + policy
+    response = session.post(base + "/SelfAsserted", params={"tx": transaction, "p": policy}, data={
+        "request_type": "RESPONSE", "signInName": secret["USERNAME"], "password": secret["PASSWORD"],
+    }, headers={"X-CSRF-TOKEN": csrf}, timeout=45)
+    answer = response.json()
+    if answer.get("message"):
+        raise RuntimeError("DataDriven a respins autentificarea.")
+    session.get(base + "/api/" + api + "/confirmed", params={"rememberMe": "false", "csrf_token": csrf, "tx": transaction, "p": policy}, headers={"X-CSRF-TOKEN": csrf}, timeout=45)
+    projects = session.get("https://www.datadriven.ro/api/ProjectsGet", timeout=45).json()["projects"]
+    if not projects:
+        return []
+    project_id = projects[0]["id"]
+    # Aceeași vedere ca „Monitor > Relevante” din aplicația DataDriven.
+    query = {
+        "skip": 0, "top": 100, "monitoringCriteria": ["main"], "authorities": [],
+        "searchText": "*", "sortOrder": "pub", "authorityFilter": [], "cpvFilter": [],
+        "areaFilter": [], "domainFilter": [], "categoryFilter": [], "typeFilter": [],
+        "noticeTypeFilter": [], "visibilityFilter": ["showVisible"], "statusFilter": ["open"],
+        "relevanceFilter": ["High", "Medium"], "primaryCategoriesFilter": False,
+    }
+    notices = session.post("https://www.datadriven.ro/api/ProjectNotices/" + project_id, json=query, timeout=45).json()["notices"]
+    return [{
+        "noticeId": "datadriven:" + item["id"], "noticeNo": item.get("noticeNo", "DataDriven"),
+        "contractTitle": item.get("title") or item.get("fullTitle") or "—",
+        "contractingAuthorityNameAndFN": item.get("authorityName", "—"),
+        "cpvCodeAndName": "%s - %s" % (item.get("cpv", ""), item.get("cpvName", "")),
+        "tenderReceiptDeadlineExport": item.get("deadline") or "nespecificat",
+        "_source": "DataDriven",
+        "_url": "https://www.datadriven.ro/app/?id=%s&monitor=true&AiRelevance=Relevante&noticeId=%s" % (project_id, item["id"]),
+    } for item in notices]
+
+
 def cpv_for(notice):
     value = notice.get("cpvCodeAndName", "")
     return next((code for code in CPV_CODES if value.startswith(code)), None)
 
 
 def notice_url(notice):
+    if notice.get("_url"):
+        return notice["_url"]
     # SCN/CN sunt anunțuri de participare; pagina publică folosește identificatorul intern.
     return f"https://e-licitatie.ro/pub/notices/c-notice/v2/view/{notice['noticeId']}"
 
@@ -122,23 +171,33 @@ def send_email(notices, recipients):
     security = os.getenv("SMTP_SECURITY", "starttls").lower()
     sender = os.environ["SMTP_FROM"]
     password = os.environ["SMTP_PASSWORD"]
-    rows = []
-    text_rows = []
-    for item in notices:
-        cpv = cpv_for(item)
-        title, authority = item.get("contractTitle", "—"), item.get("contractingAuthorityNameAndFN", "—")
-        deadline = item.get("tenderReceiptDeadlineExport") or "nespecificat"
-        url = notice_url(item)
-        rows.append(f"<tr><td><a href='{escape(url)}'>{escape(item.get('noticeNo', 'SEAP'))}</a></td>"
-                    f"<td>{escape(title)}</td><td>{escape(authority)}</td><td>{escape(cpv)}</td><td>{escape(deadline)}</td></tr>")
-        text_rows.append(f"{item.get('noticeNo')} | {title}\nAutoritate: {authority}\nCPV: {cpv}\nTermen: {deadline}\n{url}")
+    text_sections = []
+    html_sections = []
+    for source in ("SEAP", "DataDriven"):
+        source_items = [item for item in notices if item.get("_source", "SEAP") == source]
+        if not source_items:
+            continue
+        rows = []
+        text_rows = []
+        for item in source_items:
+            cpv = cpv_for(item)
+            title, authority = item.get("contractTitle", "—"), item.get("contractingAuthorityNameAndFN", "—")
+            deadline = item.get("tenderReceiptDeadlineExport") or "nespecificat"
+            url = notice_url(item)
+            rows.append(f"<tr><td><a href='{escape(url)}'>{escape(item.get('noticeNo', source))}</a></td>"
+                        f"<td>{escape(title)}</td><td>{escape(authority)}</td><td>{escape(cpv)}</td><td>{escape(deadline)}</td></tr>")
+            text_rows.append(f"{item.get('noticeNo')} | {title}\nAutoritate: {authority}\nCPV: {cpv}\nTermen: {deadline}\n{url}")
+        text_sections.append(source + "\n" + "\n\n".join(text_rows))
+        html_sections.append("<h2>" + escape(source) + "</h2><table border='1' cellpadding='7' cellspacing='0'>"
+                             "<thead><tr><th>Anunț</th><th>Obiect</th><th>Autoritate</th><th>CPV</th><th>Termen</th></tr></thead><tbody>"
+                             + "".join(rows) + "</tbody></table>")
     message = EmailMessage()
-    message["Subject"] = f"SEAP: {len(notices)} licitații noi relevante"
+    summary = ", ".join("%s %s" % (sum(1 for x in notices if x.get("_source", "SEAP") == source), source) for source in ("SEAP", "DataDriven") if any(x.get("_source", "SEAP") == source for x in notices))
+    message["Subject"] = f"Licitații noi: {summary}"
     message["From"], message["To"] = sender, ", ".join(recipients)
-    message.set_content("\n\n".join(text_rows))
-    message.add_alternative("""<html><body><p>Au apărut licitații SEAP noi, cu CPV-urile urmărite.</p>
-      <table border='1' cellpadding='7' cellspacing='0'><thead><tr><th>Anunț</th><th>Obiect</th><th>Autoritate</th><th>CPV</th><th>Termen</th></tr></thead>
-      <tbody>""" + "".join(rows) + "</tbody></table><p>Sursă: SEAP.</p></body></html>", subtype="html")
+    message.set_content("\n\n".join(text_sections))
+    message.add_alternative("<html><body><p>Au apărut licitații noi, cu CPV-urile urmărite.</p>"
+                            + "".join(html_sections) + "</body></html>", subtype="html")
     context = ssl.create_default_context()
     smtp_class = smtplib.SMTP_SSL if security == "ssl" else smtplib.SMTP
     with smtp_class(host, port, timeout=45, context=context) if security == "ssl" else smtp_class(host, port, timeout=45) as smtp:
@@ -153,34 +212,44 @@ def run_once():
     started_at = datetime.now(timezone.utc).isoformat()
     run_id = con.execute("INSERT INTO runs(started_at, status) VALUES (?, 'running')", (started_at,)).lastrowid
     try:
-        matched = [item for item in fetch_notices() if cpv_for(item)]
+        seap_items = fetch_notices()
+        for item in seap_items:
+            item["_source"] = "SEAP"
+        matched = [item for item in seap_items + fetch_datadriven_notices() if cpv_for(item)]
         unseen = [item for item in matched if not con.execute("SELECT 1 FROM notices WHERE notice_id = ?", (str(item["noticeId"]),)).fetchone()]
+        initialized_sources = set()
+        for source in ("SEAP", "DataDriven"):
+            source_unseen = [item for item in unseen if item.get("_source", "SEAP") == source]
+            source_count = con.execute("SELECT COUNT(*) FROM notices WHERE notice_id LIKE ?", ("datadriven:%" if source == "DataDriven" else "datadriven:%",)).fetchone()[0] if source == "DataDriven" else con.execute("SELECT COUNT(*) FROM notices WHERE notice_id NOT LIKE 'datadriven:%'").fetchone()[0]
+            if source_unseen and source_count == 0:
+                initialized_sources.add(source)
+        alertable = [item for item in unseen if item.get("_source", "SEAP") not in initialized_sources]
         sent_count = 0
         if unseen:
-            # Prima rulare stabilește doar reperul, fără să trimită retrospectiv un val de alerte.
-            known_count = con.execute("SELECT COUNT(*) FROM notices").fetchone()[0]
-            if known_count:
+            # Fiecare sursă își stabilește propriul reper, fără alerte retrospective.
+            if alertable:
                 recipients = get_recipients(con)
                 if not recipients:
                     raise RuntimeError("Nu este configurat niciun destinatar de e-mail.")
-                send_email(unseen, recipients)
-                sent_count = len(unseen)
+                send_email(alertable, recipients)
+                sent_count = len(alertable)
                 now = datetime.now(timezone.utc).isoformat()
                 with con:
                     con.executemany(
-                        "INSERT INTO deliveries(notice_id, notice_no, title, cpv, recipients, sent_at) VALUES (?, ?, ?, ?, ?, ?)",
-                        [(str(x["noticeId"]), x.get("noticeNo", "SEAP"), x.get("contractTitle", "—"), cpv_for(x), ", ".join(recipients), now) for x in unseen],
+                        "INSERT INTO deliveries(notice_id, notice_no, title, cpv, recipients, sent_at, source) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        [(str(x["noticeId"]), x.get("noticeNo", "SEAP"), x.get("contractTitle", "—"), cpv_for(x), ", ".join(recipients), now, x.get("_source", "SEAP")) for x in alertable],
                     )
-                logging.info("Trimis e-mail pentru %s licitații noi.", len(unseen))
+                logging.info("Trimis e-mail pentru %s licitații noi.", len(alertable))
             else:
-                logging.info("Inițializare: %s licitații curente marcate, fără e-mail.", len(unseen))
+                logging.info("Inițializare %s: %s licitații curente marcate, fără e-mail.", ", ".join(sorted(initialized_sources)), len(unseen))
             with con:
                 con.executemany("INSERT OR IGNORE INTO notices(notice_id, seen_at) VALUES (?, ?)", [(str(x["noticeId"]), datetime.now(timezone.utc).isoformat()) for x in unseen])
         else:
             logging.info("Nicio licitație nouă relevantă.")
         with con:
-            con.execute("UPDATE runs SET completed_at = ?, status = 'ok', found_count = ?, sent_count = ?, message = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), len(unseen), sent_count, "Nicio noutate" if not unseen else "Procesare reușită", run_id))
-        return {"found": len(unseen), "sent": sent_count}
+            message = "Nicio noutate" if not unseen else ("Reper inițial stabilit: " + ", ".join(sorted(initialized_sources)) if initialized_sources else "Procesare reușită")
+            con.execute("UPDATE runs SET completed_at = ?, status = 'ok', found_count = ?, sent_count = ?, message = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), len(alertable), sent_count, message, run_id))
+        return {"found": len(alertable), "sent": sent_count}
     except Exception as exc:
         with con:
             con.execute("UPDATE runs SET completed_at = ?, status = 'error', message = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), str(exc), run_id))
