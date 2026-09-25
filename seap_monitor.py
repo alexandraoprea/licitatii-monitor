@@ -207,8 +207,10 @@ def send_email(notices, recipients):
                              + "".join(rows) + "</tbody></table>")
     message = EmailMessage()
     summary = ", ".join("%s %s" % (sum(1 for x in notices if x.get("_source", "SEAP") == source), source) for source in ("SEAP", "DataDriven") if any(x.get("_source", "SEAP") == source for x in notices))
-    subject = f"Licitații noi: {summary}"
-    html_body = "<html><body><p>Au apărut licitații noi, cu CPV-urile urmărite.</p>" + "".join(html_sections) + "</body></html>"
+    is_single = len(notices) == 1
+    subject = ("Licitație nouă: " if is_single else "Licitații noi: ") + summary
+    introduction = "A apărut o licitație nouă" if is_single else "Au apărut licitații noi"
+    html_body = "<html><body><p>" + introduction + ", cu CPV-urile urmărite.</p>" + "".join(html_sections) + "</body></html>"
     text_body = "\n\n".join(text_sections)
     message["Subject"] = subject
     # Destinatarii sunt puși doar în plicul SMTP, nu unul în câmpul To al altuia.
@@ -263,7 +265,7 @@ def run_once():
                         "INSERT INTO deliveries(notice_id, notice_no, title, cpv, recipients, sent_at, source, batch_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                         [(str(x["noticeId"]), x.get("noticeNo", "SEAP"), x.get("contractTitle", "—"), cpv_for(x), ", ".join(recipients), now, x.get("_source", "SEAP"), batch_id) for x in alertable],
                     )
-                logging.info("Trimis e-mail pentru %s licitații noi.", len(alertable))
+                logging.info("Trimis e-mail pentru %s.", "o licitație nouă" if len(alertable) == 1 else "%s licitații noi" % len(alertable))
             else:
                 logging.info("Inițializare %s: %s licitații curente marcate, fără e-mail.", ", ".join(sorted(initialized_sources)), len(unseen))
             with con:
