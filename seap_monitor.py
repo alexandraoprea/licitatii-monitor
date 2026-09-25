@@ -211,7 +211,8 @@ def send_email(notices, recipients):
     html_body = "<html><body><p>Au apărut licitații noi, cu CPV-urile urmărite.</p>" + "".join(html_sections) + "</body></html>"
     text_body = "\n\n".join(text_sections)
     message["Subject"] = subject
-    message["From"], message["To"] = sender, ", ".join(recipients)
+    # Destinatarii sunt puși doar în plicul SMTP, nu unul în câmpul To al altuia.
+    message["From"], message["To"] = sender, "Destinatari ascunsi:;"
     message.set_content(text_body)
     message.add_alternative(html_body, subtype="html")
     context = ssl.create_default_context()
@@ -220,7 +221,7 @@ def send_email(notices, recipients):
         if security == "starttls":
             smtp.starttls(context=context)
         smtp.login(sender, password)
-        smtp.send_message(message)
+        smtp.send_message(message, from_addr=sender, to_addrs=recipients)
     return {"subject": subject, "html_body": html_body, "text_body": text_body}
 
 
