@@ -84,16 +84,16 @@ class Dashboard(BaseHTTPRequestHandler):
         con = monitor.database()
         recipients = ", ".join(monitor.get_recipients(con))
         runs = con.execute("SELECT started_at, completed_at, status, seap_found_count, datadriven_found_count, sent_count, message FROM runs ORDER BY id DESC LIMIT 12").fetchall()
-        deliveries = con.execute("SELECT notice_no, title, cpv, recipients, sent_at, source FROM deliveries ORDER BY id DESC LIMIT 50").fetchall()
+        emails = con.execute("SELECT subject, recipients, sent_at, html_body FROM email_batches ORDER BY id DESC LIMIT 50").fetchall()
         con.close()
         run_rows = "".join(f"<tr><td>{escape(human_time(x[0]))}</td><td>{escape(str(x[2]))}</td><td>{x[3]}</td><td>{x[4]}</td><td>{x[5]}</td><td>{escape(str(x[6] or ''))}</td></tr>" for x in runs) or "<tr><td colspan='6'>Încă nu există rulări.</td></tr>"
-        delivery_rows = "".join(f"<tr><td>{escape(human_time(x[4]))}</td><td>{escape(str(x[5]))}</td><td>{escape(str(x[0]))}</td><td>{escape(str(x[1]))}</td><td>{escape(str(x[2]))}</td><td>{escape(str(x[3]))}</td></tr>" for x in deliveries) or "<tr><td colspan='6'>Încă nu s-a trimis niciun e-mail.</td></tr>"
+        email_rows = "".join(f"<tr><td>{escape(human_time(x[2]))}</td><td>{escape(str(x[1]))}</td><td>{escape(str(x[0]))}</td><td><details><summary>Vezi conținut</summary><div class='mail-preview'>{x[3]}</div></details></td></tr>" for x in emails) or "<tr><td colspan='4'>Încă nu s-a trimis niciun e-mail.</td></tr>"
         page = f"""<!doctype html><html lang='ro'><meta charset='utf-8'><title>Monitor licitații</title><style>
-body{{font:15px system-ui,sans-serif;max-width:1100px;margin:40px auto;padding:0 20px;color:#172033}}h1{{margin-bottom:4px}}section{{background:#f7f9fc;border:1px solid #d9e1ed;border-radius:10px;padding:20px;margin:22px 0}}input{{width:min(600px,100%);padding:9px;margin:6px 0}}button{{padding:9px 15px;background:#1769aa;color:#fff;border:0;border-radius:5px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:9px;text-align:left;border-bottom:1px solid #d9e1ed;vertical-align:top}}th{{color:#536174}}small{{color:#536174}}</style>
+body{{font:15px system-ui,sans-serif;max-width:1100px;margin:40px auto;padding:0 20px;color:#172033}}h1{{margin-bottom:4px}}section{{background:#f7f9fc;border:1px solid #d9e1ed;border-radius:10px;padding:20px;margin:22px 0}}input{{width:min(600px,100%);padding:9px;margin:6px 0}}button{{padding:9px 15px;background:#1769aa;color:#fff;border:0;border-radius:5px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:9px;text-align:left;border-bottom:1px solid #d9e1ed;vertical-align:top}}th{{color:#536174}}small{{color:#536174}}summary{{cursor:pointer;color:#1769aa}}.mail-preview{{margin-top:12px;background:#fff;padding:12px;overflow:auto}}.mail-preview table{{min-width:700px}}</style>
 <h1>Monitor licitații</h1>
 <section><h2>Destinatari alerte</h2><form method='post' action='/settings'><input name='recipients' required value='{escape(recipients)}' aria-label='Destinatari'><br><small>Mai multe adrese se separă prin virgulă.</small><p><button>Salvează destinatarii</button></p></form></section>
 <section><h2>Istoric rulări</h2><table><tr><th>Pornită</th><th>Stare</th><th>Noi SEAP</th><th>Noi DataDriven</th><th>Trimise</th><th>Detalii</th></tr>{run_rows}</table></section>
-<section><h2>E-mailuri trimise</h2><table><tr><th>Moment</th><th>Sursă</th><th>Anunț</th><th>Obiect</th><th>CPV</th><th>Destinatari</th></tr>{delivery_rows}</table></section></html>"""
+<section><h2>E-mailuri trimise</h2><table><tr><th>Moment</th><th>Destinatari</th><th>Subiect</th><th>Conținut</th></tr>{email_rows}</table></section></html>"""
         body = page.encode()
         self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
 

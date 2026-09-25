@@ -68,11 +68,17 @@ def database():
     con.execute("""CREATE TABLE IF NOT EXISTS deliveries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, notice_id TEXT NOT NULL, notice_no TEXT NOT NULL,
         title TEXT NOT NULL, cpv TEXT NOT NULL, recipients TEXT NOT NULL, sent_at TEXT NOT NULL,
-        source TEXT NOT NULL DEFAULT 'SEAP'
+        source TEXT NOT NULL DEFAULT 'SEAP', batch_id INTEGER
     )""")
     delivery_columns = [row[1] for row in con.execute("PRAGMA table_info(deliveries)")]
     if "source" not in delivery_columns:
         con.execute("ALTER TABLE deliveries ADD COLUMN source TEXT NOT NULL DEFAULT 'SEAP'")
+    if "batch_id" not in delivery_columns:
+        con.execute("ALTER TABLE deliveries ADD COLUMN batch_id INTEGER")
+    con.execute("""CREATE TABLE IF NOT EXISTS email_batches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, recipients TEXT NOT NULL, subject TEXT NOT NULL,
+        sent_at TEXT NOT NULL, html_body TEXT NOT NULL, text_body TEXT NOT NULL
+    )""")
     con.commit()
     return con
 
@@ -201,11 +207,13 @@ def send_email(notices, recipients):
                              + "".join(rows) + "</tbody></table>")
     message = EmailMessage()
     summary = ", ".join("%s %s" % (sum(1 for x in notices if x.get("_source", "SEAP") == source), source) for source in ("SEAP", "DataDriven") if any(x.get("_source", "SEAP") == source for x in notices))
-    message["Subject"] = f"Licitații noi: {summary}"
+    subject = f"Licitații noi: {summary}"
+    html_body = "<html><body><p>Au apărut licitații noi, cu CPV-urile urmărite.</p>" + "".join(html_sections) + "</body></html>"
+    text_body = "\n\n".join(text_sections)
+    message["Subject"] = subject
     message["From"], message["To"] = sender, ", ".join(recipients)
-    message.set_content("\n\n".join(text_sections))
-    message.add_alternative("<html><body><p>Au apărut licitații noi, cu CPV-urile urmărite.</p>"
-                            + "".join(html_sections) + "</body></html>", subtype="html")
+    message.set_content(text_body)
+    message.add_alternative(html_body, subtype="html")
     context = ssl.create_default_context()
     smtp_class = smtplib.SMTP_SSL if security == "ssl" else smtplib.SMTP
     with smtp_class(host, port, timeout=45, context=context) if security == "ssl" else smtp_class(host, port, timeout=45) as smtp:
@@ -213,6 +221,7 @@ def send_email(notices, recipients):
             smtp.starttls(context=context)
         smtp.login(sender, password)
         smtp.send_message(message)
+    return {"subject": subject, "html_body": html_body, "text_body": text_body}
 
 
 def run_once():
@@ -241,13 +250,17 @@ def run_once():
                 recipients = get_recipients(con)
                 if not recipients:
                     raise RuntimeError("Nu este configurat niciun destinatar de e-mail.")
-                send_email(alertable, recipients)
+                email = send_email(alertable, recipients)
                 sent_count = len(alertable)
                 now = datetime.now(timezone.utc).isoformat()
                 with con:
+                    batch_id = con.execute(
+                        "INSERT INTO email_batches(recipients, subject, sent_at, html_body, text_body) VALUES (?, ?, ?, ?, ?)",
+                        (", ".join(recipients), email["subject"], now, email["html_body"], email["text_body"]),
+                    ).lastrowid
                     con.executemany(
-                        "INSERT INTO deliveries(notice_id, notice_no, title, cpv, recipients, sent_at, source) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        [(str(x["noticeId"]), x.get("noticeNo", "SEAP"), x.get("contractTitle", "—"), cpv_for(x), ", ".join(recipients), now, x.get("_source", "SEAP")) for x in alertable],
+                        "INSERT INTO deliveries(notice_id, notice_no, title, cpv, recipients, sent_at, source, batch_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        [(str(x["noticeId"]), x.get("noticeNo", "SEAP"), x.get("contractTitle", "—"), cpv_for(x), ", ".join(recipients), now, x.get("_source", "SEAP"), batch_id) for x in alertable],
                     )
                 logging.info("Trimis e-mail pentru %s licitații noi.", len(alertable))
             else:
