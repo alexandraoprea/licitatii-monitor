@@ -1,0 +1,1 @@
+# Nu sunt necesare biblioteci externe: serviciul folosește exclusiv Python standard library.

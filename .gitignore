@@ -1,0 +1,11 @@
+# Secrete și configurație locală
+.env
+
+# Date operaționale locale
+data/
+*.sqlite3
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
