@@ -1,6 +1,6 @@
 # Monitor de licitații SEAP — RomGreen
 
-Serviciul urmărește anunțurile de participare publicate în SEAP și trimite un e-mail agregat la `izabela.oprea@upb.ro` în etapa de test, când găsește o licitație nouă cu unul dintre cele 16 coduri CPV configurate (curățenie, salubrizare/deșeuri, DDD și pază). La producție, destinatarul se schimbă din `.env` în `office@romgreen.eu`.
+Serviciul urmărește anunțurile de participare publicate în SEAP și trimite un e-mail agregat către destinatarii configurați în dashboard, când găsește o licitație nouă cu unul dintre cele 16 coduri CPV configurate (curățenie, salubrizare/deșeuri, DDD și pază).
 
 ## Ce face
 

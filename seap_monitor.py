@@ -38,9 +38,8 @@ CPV_CODES = {
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "./data"))
 DB_PATH = DATA_DIR / "seap_monitor.sqlite3"
-# În etapa de test, alertele merg la adresa de verificare; în producție se setează
-# RECIPIENT=office@romgreen.eu în fișierul .env.
-DEFAULT_RECIPIENT = os.getenv("RECIPIENT", "izabela.oprea@upb.ro")
+# Destinatarul se configurează exclusiv în .env sau din dashboard.
+DEFAULT_RECIPIENT = os.getenv("RECIPIENT", "")
 LOOKBACK_HOURS = int(os.getenv("LOOKBACK_HOURS", "72"))
 PAGE_SIZE = 100
 
