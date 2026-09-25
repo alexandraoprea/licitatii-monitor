@@ -184,6 +184,7 @@ def send_email(notices, recipients):
     port = int(os.getenv("SMTP_PORT", "587"))
     security = os.getenv("SMTP_SECURITY", "starttls").lower()
     sender = os.environ["SMTP_FROM"]
+    sender_name = os.getenv("SMTP_FROM_NAME", "Monitorizare Licitatii")
     password = os.environ["SMTP_PASSWORD"]
     text_sections = []
     html_sections = []
@@ -214,7 +215,7 @@ def send_email(notices, recipients):
     text_body = "\n\n".join(text_sections)
     message["Subject"] = subject
     # Destinatarii sunt puși doar în plicul SMTP, nu unul în câmpul To al altuia.
-    message["From"], message["To"] = sender, "Destinatari ascunsi:;"
+    message["From"], message["To"] = "%s <%s>" % (sender_name, sender), "Destinatari ascunsi:;"
     message.set_content(text_body)
     message.add_alternative(html_body, subtype="html")
     context = ssl.create_default_context()
