@@ -55,8 +55,16 @@ def database():
     con.execute("""CREATE TABLE IF NOT EXISTS runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, completed_at TEXT,
         status TEXT NOT NULL, found_count INTEGER NOT NULL DEFAULT 0, sent_count INTEGER NOT NULL DEFAULT 0,
-        message TEXT
+        message TEXT, seap_found_count INTEGER NOT NULL DEFAULT 0,
+        datadriven_found_count INTEGER NOT NULL DEFAULT 0
     )""")
+    run_columns = [row[1] for row in con.execute("PRAGMA table_info(runs)")]
+    if "seap_found_count" not in run_columns:
+        con.execute("ALTER TABLE runs ADD COLUMN seap_found_count INTEGER NOT NULL DEFAULT 0")
+        # Rulările existente erau exclusiv SEAP.
+        con.execute("UPDATE runs SET seap_found_count = found_count")
+    if "datadriven_found_count" not in run_columns:
+        con.execute("ALTER TABLE runs ADD COLUMN datadriven_found_count INTEGER NOT NULL DEFAULT 0")
     con.execute("""CREATE TABLE IF NOT EXISTS deliveries (
         id INTEGER PRIMARY KEY AUTOINCREMENT, notice_id TEXT NOT NULL, notice_no TEXT NOT NULL,
         title TEXT NOT NULL, cpv TEXT NOT NULL, recipients TEXT NOT NULL, sent_at TEXT NOT NULL,
@@ -224,6 +232,8 @@ def run_once():
             if source_unseen and source_count == 0:
                 initialized_sources.add(source)
         alertable = [item for item in unseen if item.get("_source", "SEAP") not in initialized_sources]
+        seap_found_count = len([item for item in alertable if item.get("_source", "SEAP") == "SEAP"])
+        datadriven_found_count = len([item for item in alertable if item.get("_source", "SEAP") == "DataDriven"])
         sent_count = 0
         if unseen:
             # Fiecare sursă își stabilește propriul reper, fără alerte retrospective.
@@ -248,7 +258,7 @@ def run_once():
             logging.info("Nicio licitație nouă relevantă.")
         with con:
             message = "Nicio noutate" if not unseen else ("Reper inițial stabilit: " + ", ".join(sorted(initialized_sources)) if initialized_sources else "Procesare reușită")
-            con.execute("UPDATE runs SET completed_at = ?, status = 'ok', found_count = ?, sent_count = ?, message = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), len(alertable), sent_count, message, run_id))
+            con.execute("UPDATE runs SET completed_at = ?, status = 'ok', found_count = ?, sent_count = ?, message = ?, seap_found_count = ?, datadriven_found_count = ? WHERE id = ?", (datetime.now(timezone.utc).isoformat(), len(alertable), sent_count, message, seap_found_count, datadriven_found_count, run_id))
         return {"found": len(alertable), "sent": sent_count}
     except Exception as exc:
         with con:
